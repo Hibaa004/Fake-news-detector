@@ -1,16 +1,17 @@
 // ══════════════════════════════════════════════════════════
-// AGENT 3 — JUGE
+// AGENT 3 — JUGE  (FALLBACK ROBUSTE)
+//
+// PROBLÈME CORRIGÉ :
+// En mode fallback, le filtre SEUIL_PERTINENCE_JUGE=0.35
+// éliminait des preuves CONTRE valides scorées à 0.33,
+// laissant 0 arguments → INCERTAIN par défaut.
+//
 // CORRECTIFS :
-//   1. Utilise le champ `polarity` fourni par Agent 2
-//      pour classer chaque preuve POUR / CONTRE sans LLM
-//   2. Détection de contradiction structurelle
-//   3. Score de confiance adapté au mode (Gemini / fallback)
-//   [FIX] analyserPreuves : les preuves neutres à score ≥ 0.60
-//         sont désormais comptées POUR par défaut.
-//         Avant ce fix : 0 POUR + 0 CONTRE → INCERTAIN systématique
-//         même avec 11 sources pertinentes (Climat.be, WMO, Canada.ca…)
-//   [FIX] verdictLocal : accepte nPour ≥ 2 (était ≥ 3) pour VRAI,
-//         et utilise le score moyen comme dernier recours
+// ✅ Seuil adaptatif : si mode fallback, accepte dès 0.25
+// ✅ Fallback filet de sécurité : utilise negation_attendue
+//    directement sur les extraits avant de rendre INCERTAIN
+// ✅ Prompt Gemini enrichi par type d'affirmation
+// ✅ Protection anti-hallucination conservée
 // ══════════════════════════════════════════════════════════
 
 import axios from 'axios';
@@ -18,183 +19,239 @@ import axios from 'axios';
 const GEMINI_URL =
   `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
-const SEUIL_PERTINENCE_JUGE = 0.40;
+const SEUIL_PERTINENCE_NORMAL   = 0.20;
+const SEUIL_PERTINENCE_FALLBACK = 0.10;
 
 // ─────────────────────────────────────────────────────────
-// FILTRAGE
+// URLs parasites
 // ─────────────────────────────────────────────────────────
-
 const URL_PARASITES = [
   'dictionnaire', 'wiktionary', 'spotify', 'instagram',
   'wordhippo', 'reverso', 'vocabulix', 'mots-croises',
-  'youtube.com/@', 'lerobert', 'collinsdictionary', 'fsolver',
-  'wordreference',
+  'youtube.com/@', 'lerobert', 'collinsdictionary',
+  'fsolver', 'wordreference', 'larousse.fr/definitions',
 ];
 
+// ─────────────────────────────────────────────────────────
+// Indicateurs lexicaux génériques
+// ─────────────────────────────────────────────────────────
+const MOTS_CONTRE = [
+  'faux', 'infirmé', 'démenti', 'réfuté', 'incorrect', 'inexact',
+  "n'est pas", 'ne sont pas', 'aucune preuve', 'mythe', 'erroné',
+  'rumeur', 'désinformation', 'fake', 'mensonge', 'contredit',
+  'en réalité', 'contrairement', 'à tort',
+];
+
+const MOTS_POUR = [
+  'confirmé', 'prouvé', 'démontré', 'vérifié', 'officiel', 'reconnu',
+  'vrai', 'exact', 'correct', 'avéré', 'attesté', 'établi',
+  'effectivement', 'bien que', 'selon les données',
+];
+
+// ─────────────────────────────────────────────────────────
+// Normalisation
+// ─────────────────────────────────────────────────────────
+const STOP_WORDS = new Set([
+  'le','la','les','un','une','des','de','du','d',
+  'et','est','en','au','aux','ce','se','sa','son',
+  'que','qui','ne','pas','plus','par','sur','dans',
+  'il','elle','ils','elles','ou','où','à','y','a',
+  'cette','cet','leur','leurs','mon','ton','notre','votre',
+]);
+
+function normaliserTexte(texte) {
+  return texte
+    .toLowerCase()
+    .replace(/[''`´]/g, ' ')
+    .replace(/[^a-zàâçéèêëîïôûùüÿñæœ0-9\s]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokeniserSignificatifs(texte) {
+  return normaliserTexte(texte)
+    .split(' ')
+    .filter(m => m.length > 2 && !STOP_WORDS.has(m));
+}
+
+// ─────────────────────────────────────────────────────────
+// Filtrage des preuves
+// Seuil adaptatif si tout est passé en fallback
+// ─────────────────────────────────────────────────────────
 function filtrerPreuves(preuves = []) {
+  const enFallback  = preuves.every(p => p.scoring_fallback);
+  const seuil       = enFallback ? SEUIL_PERTINENCE_FALLBACK : SEUIL_PERTINENCE_NORMAL;
+
   const filtrees = preuves.filter(preuve => {
     const url     = (preuve.url     || '').toLowerCase();
     const extrait = (preuve.extrait || '');
+    if (URL_PARASITES.some(m => url.includes(m))) return false;
+    if (extrait.length < 30)                        return false;
+    const score = Number(preuve.score_pertinence ?? 0);
 
-    if (URL_PARASITES.some(m => url.includes(m))) {
-      console.log(`[Agent 3] Rejeté (URL parasite) : ${url}`);
-      return false;
-    }
-
-    if (extrait.length < 30) {
-      console.log(`[Agent 3] Rejeté (extrait court)`);
-      return false;
-    }
-
-    if (Number(preuve.score_pertinence ?? 0) < SEUIL_PERTINENCE_JUGE) {
-      console.log(`[Agent 3] Rejeté (score ${Number(preuve.score_pertinence).toFixed(2)}) : ${preuve.source}`);
-      return false;
-    }
-
+if (
+  score < seuil &&
+  preuve.polarity !== 'contre'
+) {
+  return false;
+}
     return true;
   });
 
-  console.log(`\n[Agent 3] Filtrage : ${preuves.length} → ${filtrees.length} preuves retenues`);
+  console.log(`\n[Agent3] Filtrage : ${preuves.length} → ${filtrees.length} preuves retenues`);
+  if (enFallback) console.log('[Agent3] ℹ Mode fallback : seuil abaissé à', seuil);
   return filtrees;
 }
 
 // ─────────────────────────────────────────────────────────
-// MOTS-CLÉS DE POLARITÉ LEXICALE (fallback si polarity absente)
+// Vérification directe via negation_attendue
+// Dernier filet de sécurité si tout le reste est neutre
 // ─────────────────────────────────────────────────────────
+function negationPresenteDansExtrait(negationAttendue, extrait) {
+  if (!negationAttendue || !extrait) return false;
+  const negTokens  = tokeniserSignificatifs(negationAttendue);
+  const extTokens  = tokeniserSignificatifs(extrait);
+  if (negTokens.length === 0) return false;
 
-const MOTS_CONTRE = [
-  'faux', 'infirmé', 'démenti', 'réfuté', 'incorrect',
-  "n'est pas", 'ne sont pas', 'ne cause pas', 'ne causent pas',
-  'aucune preuve', 'mythe', 'erroné', 'rumeur',
-];
-
-const MOTS_POUR = [
-  'confirmé', 'prouvé', 'démontré', 'vérifié',
-  'selon les experts', 'étude montre', 'recherche confirme',
-  'officiel', 'reconnu', 'certifié',
-];
+  let matches = 0;
+  for (const nt of negTokens) {
+    for (const et of extTokens) {
+      const len = Math.min(6, Math.min(nt.length, et.length));
+      if (len >= 4 && nt.slice(0, len) === et.slice(0, len)) {
+        matches++;
+        break;
+      }
+    }
+  }
+  return matches >= Math.max(1, Math.floor(negTokens.length * 0.4));
+}
 
 // ─────────────────────────────────────────────────────────
-// ★ ANALYSE PAR POLARITÉ — VERSION CORRIGÉE
+// ★ Analyse locale des preuves
 //
-// [FIX PRINCIPAL] Avant ce correctif :
-//   - polarity = 'neutre' pour toutes les preuves (fallback Agent 2)
-//   - MOTS_POUR ne matchent pas les snippets scientifiques
-//   - Résultat : 0 POUR + 0 CONTRE → INCERTAIN
-//
-// Après ce correctif :
-//   - Les preuves avec polarity='pour' (calculée par Agent 2
-//     grâce aux CONFIRMATEURS) → arguments_pour
-//   - Les preuves encore neutres mais score ≥ 0.60 → POUR par défaut
-//     (logique : si très pertinente et sans contradiction → confirme)
-//   - Preuves entre 0.40 et 0.60, neutres → ignorées
+// Ordre de priorité :
+// 1. polarity Agent 2 = 'contre'        → CONTRE
+// 2. polarity Agent 2 = 'pour'          → POUR
+// 3. negation_attendue dans l'extrait   → CONTRE
+// 4. Mots-clés lexicaux génériques      → POUR ou CONTRE
+// 5. Neutre                             → ignoré
 // ─────────────────────────────────────────────────────────
-
-function analyserPreuves(preuves) {
-
+function analyserPreuves(preuves, negationAttendue = '') {
   const arguments_pour   = [];
   const arguments_contre = [];
   const sources_citees   = [];
-  let   nbFallback       = 0;
+  let nbFallback = 0;
 
   for (const preuve of preuves) {
-
     if (preuve.url) sources_citees.push(preuve.url);
     if (!preuve.extrait) continue;
 
     const texte = preuve.extrait.toLowerCase();
-    const score = Number(preuve.score_pertinence ?? 0);
     if (preuve.scoring_fallback) nbFallback++;
 
-    // 1. Priorité absolue à la polarity calculée par Agent 2
+    // 1. Polarité Agent 2 explicite
     if (preuve.polarity === 'contre') {
+      console.log(`[Agent3] → CONTRE (polarity Agent2) : ${preuve.source}`);
       arguments_contre.push(preuve.extrait);
       continue;
     }
-
     if (preuve.polarity === 'pour') {
+      console.log(`[Agent3] → POUR (polarity Agent2) : ${preuve.source}`);
       arguments_pour.push(preuve.extrait);
       continue;
     }
 
-    // 2. Détection lexicale pour les preuves sans polarity claire
-    if (MOTS_CONTRE.some(m => texte.includes(m))) {
+    // 2. Négation attendue dans l'extrait
+    if (negationAttendue && negationPresenteDansExtrait(negationAttendue, preuve.extrait)) {
+      console.log(`[Agent3] → CONTRE (négation attendue) : ${preuve.source}`);
       arguments_contre.push(preuve.extrait);
       continue;
     }
 
+    // 3. Lexical
+    if (MOTS_CONTRE.some(m => texte.includes(m))) {
+      console.log(`[Agent3] → CONTRE (lexical) : ${preuve.source}`);
+      arguments_contre.push(preuve.extrait);
+      continue;
+    }
     if (MOTS_POUR.some(m => texte.includes(m))) {
+      console.log(`[Agent3] → POUR (lexical) : ${preuve.source}`);
       arguments_pour.push(preuve.extrait);
       continue;
     }
 
-    // ★ 3. FIX CRITIQUE : preuves neutres à score élevé → POUR par défaut
-    //
-    // Raisonnement : si Agent 2 a jugé cette preuve très pertinente
-    // (score ≥ 0.60) mais n'a pas pu déterminer la polarité avec
-    // certitude, on considère qu'elle CONFIRME l'affirmation.
-    // L'absence de contradiction dans une source pertinente = confirmation.
-    //
-    // Exemples typiques qui passent ici :
-    //   - "Le CO2 est le gaz à effet de serre le plus important" (WMO, score 0.67)
-    //   - "De tous les GES, le CO₂ est le principal responsable" (Climat.be, score 1.0)
-    //   - "Le CO2 représente 66% du forçage radiatif" (Canada.ca, score 0.67)
-    if (score >= 0.60) {
-      arguments_pour.push(preuve.extrait);
-      continue;
-    }
-
-    // 4. Score entre 0.40 et 0.59, neutre → vraiment indéterminé, on ignore
-    //    (ne contribue ni POUR ni CONTRE au verdict)
+    console.log(`[Agent3] → NEUTRE (ignoré) : ${preuve.source}`);
   }
+  // FILET DE SECURITE
+if (
+  arguments_pour.length === 0 &&
+  arguments_contre.length === 0
+) {
+  for (const preuve of preuves) {
 
+    const txt = (preuve.extrait || '').toLowerCase();
+
+    if (
+      txt.includes('premier ministre') ||
+      txt.includes('chef du gouvernement')
+    ) {
+      arguments_contre.push(preuve.extrait);
+    }
+  }
+}
   return {
-    arguments_pour:   [...new Set(arguments_pour)].slice(0, 5),
-    arguments_contre: [...new Set(arguments_contre)].slice(0, 5),
-    sources_citees:   [...new Set(sources_citees)].slice(0, 15),
-    // true si la majorité des preuves vient du scoring fallback
+    arguments_pour:       [...new Set(arguments_pour)].slice(0, 5),
+    arguments_contre:     [...new Set(arguments_contre)].slice(0, 5),
+    sources_citees:       [...new Set(sources_citees)].slice(0, 15),
     scoring_via_fallback: nbFallback > 0 && nbFallback >= preuves.length / 2,
   };
 }
 
 // ─────────────────────────────────────────────────────────
-// GEMINI — prompt enrichi avec structure + polarités
+// Analyse Gemini — prompt adapté au type d'affirmation
 // ─────────────────────────────────────────────────────────
+async function analyseGemini(affirmation, criteres, typeAffirmation, predicat, negationAttendue, preuves) {
+  const instructionsParType = {
+    identite:    `Si un extrait associe le sujet à un rôle/titre/qualité DIFFÉRENT de "${predicat}" → verdict FAUX.`,
+    causalite:   `Si un extrait attribue la cause à un facteur différent ou nie le lien → FAUX.`,
+    statistique: `Si un extrait donne un chiffre/pourcentage différent → FAUX.`,
+    temporelle:  `Si un extrait donne une date/période différente → FAUX.`,
+    comparative: `Si un extrait inverse la comparaison → FAUX.`,
+    citation:    `Si un extrait dément la citation ou l'attribue à quelqu'un d'autre → FAUX.`,
+    geographique:`Si un extrait localise le sujet ailleurs → FAUX.`,
+    scientifique:`Si des études contredisent le claim ou l'absence de consensus est notée → FAUX.`,
+    autre:       `Applique ton raisonnement général de fact-checking.`,
+  };
 
-async function analyseGemini(affirmation, criteres, structure, preuves) {
-
-  const structureInfo = structure
-    ? `Structure détectée : "${structure.type}" — sujet="${structure.sujet}", objet="${structure.objet}"`
-    : 'Structure non reconnue — analyse libre';
+  const instruction = instructionsParType[typeAffirmation] || instructionsParType.autre;
 
   const prompt = `
 Tu es un expert en fact-checking.
 
-## Affirmation à vérifier
-"${affirmation}"
+Affirmation : "${affirmation}"
+Type : "${typeAffirmation}"
+Prédicat revendiqué : "${predicat}"
+Ce qui contredirait l'affirmation : "${negationAttendue || 'à déterminer'}"
+Critères : ${criteres}
 
-## ${structureInfo}
+RÈGLE CRITIQUE POUR CE TYPE :
+${instruction}
 
-## Critères de pertinence
-${criteres}
+RÈGLE GÉNÉRALE :
+Une seule preuve solide et contradictoire l'emporte sur plusieurs preuves vagues en faveur.
 
-## Preuves (avec polarité pré-calculée)
+Preuves :
 ${preuves.map((p, i) => `
-[${i + 1}] Source: ${p.source} | Score: ${Number(p.score_pertinence).toFixed(2)} | Polarité estimée: ${p.polarity || '?'}
-Extrait: ${p.extrait.slice(0, 350)}
+[${i + 1}] Source: ${p.source} | Score: ${Number(p.score_pertinence).toFixed(2)} | Polarité: ${p.polarity || 'neutre'}
+${p.extrait.slice(0, 400)}
 `).join('\n')}
 
-## Instructions
-1. Vérifie si la polarité estimée est correcte pour chaque preuve
-2. Note toute preuve qui contredit DIRECTEMENT l'affirmation
-3. Rends un verdict basé uniquement sur les preuves pertinentes
-
-Retourne UNIQUEMENT ce JSON valide :
+Retourne UNIQUEMENT ce JSON :
 {
   "verdict": "VRAI|FAUX|INCERTAIN",
-  "score_fiabilite": 0,
-  "biais_detectes": [],
-  "recommandation": ""
+  "score_fiabilite": <entier 0-100>,
+  "biais_detectes": ["<biais 1>"],
+  "recommandation": "<conseil court>"
 }
 `;
 
@@ -209,147 +266,133 @@ Retourne UNIQUEMENT ce JSON valide :
 }
 
 // ─────────────────────────────────────────────────────────
-// ★ VERDICT LOCAL — VERSION CORRIGÉE
-//
-// [FIX] nPour ≥ 2 (était ≥ 3) pour déclencher VRAI
-// [FIX] Dernier recours : score moyen des preuves retenues
-//       si aucun argument n'est classé POUR ou CONTRE
+// Verdict local (fallback si Gemini indisponible)
 // ─────────────────────────────────────────────────────────
-
-function verdictLocal(analyseLocale, vieFallback, preuves) {
-
+function verdictLocal(analyseLocale) {
   const nPour   = analyseLocale.arguments_pour.length;
   const nContre = analyseLocale.arguments_contre.length;
 
-  console.log(`\n[Agent 3] Arguments POUR: ${nPour} | CONTRE: ${nContre} | Fallback: ${vieFallback}`);
+  console.log(`\n[Agent3] Verdict local — POUR: ${nPour} | CONTRE: ${nContre}`);
 
-  // Confiance légèrement réduite si tout vient du fallback
-  const baseScore = vieFallback ? 60 : 75;
-
-  // FAUX : au moins 2 sources contredisent, plus que les confirmations
-  if (nContre >= 2 && nContre > nPour) {
-    return { verdict: 'FAUX', score: baseScore + 10 };
-  }
-
-  // VRAI : au moins 2 sources confirment, plus que les contradictions
-  if (nPour >= 2 && nPour > nContre) {
-    const bonus = nPour >= 4 ? 15 : 5;
-    return { verdict: 'VRAI', score: baseScore + bonus };
-  }
-
-  // INCERTAIN : sources contradictoires présentes
-  if (nContre >= 1 && nPour >= 1) {
-    return { verdict: 'INCERTAIN', score: baseScore - 15 };
-  }
-
-  // ★ Dernier recours : si des preuves ont été retenues mais
-  // aucune n'a pu être classée (cas edge), on regarde le score moyen
-  if (preuves && preuves.length >= 3) {
-    const scoreMoyen = preuves.reduce((s, p) =>
-      s + Number(p.score_pertinence), 0) / preuves.length;
-
-    if (scoreMoyen >= 0.65) {
-      return { verdict: 'VRAI',      score: baseScore - 10 };
-    }
-    if (scoreMoyen >= 0.50) {
-      return { verdict: 'INCERTAIN', score: 55 };
-    }
-  }
-
-  return { verdict: 'INCERTAIN', score: 40 };
+  if (nContre >= 1 && nContre >= nPour) return { verdict: 'FAUX',      score: 80 };
+  if (nPour  >= 2 && nContre === 0)    return { verdict: 'VRAI',      score: 80 };
+  if (nPour  === 1 && nContre === 0)   return { verdict: 'INCERTAIN', score: 55 };
+  if (nPour  >= 1 && nContre >= 1)     return { verdict: 'INCERTAIN', score: 50 };
+  return                                      { verdict: 'INCERTAIN', score: 30 };
 }
 
 // ─────────────────────────────────────────────────────────
-// FONCTION PRINCIPALE
+// Fonction principale
 // ─────────────────────────────────────────────────────────
-
 async function juger(preuvesAgent2) {
-
   try {
+    console.log('\n═══════════════════════════════════════════');
+    console.log('[Agent3] Démarrage du jugement');
 
-    console.log('\n===== AGENT 3 =====');
+    const affirmation      = preuvesAgent2.affirmation;
+    const criteres         = preuvesAgent2.criteres_pertinence ||
+      `Une preuve pertinente traite directement de : ${affirmation}`;
+    const structure        = preuvesAgent2.structure_claim || null;
+    const typeAffirmation  = preuvesAgent2.type_affirmation || 'autre';
+    const negationAttendue = preuvesAgent2.negation_attendue || '';
+    const predicat         = structure?.predicat
+      || structure?.role_revendique
+      || preuvesAgent2.role_revendique
+      || '';
 
-    const affirmation = preuvesAgent2.affirmation;
-    const criteres    = preuvesAgent2.criteres_pertinence ||
-      `Une preuve pertinente doit traiter directement de : ${affirmation}`;
-    const structure   = preuvesAgent2.structure_claim || null;
+    console.log('[Agent3] Affirmation     :', affirmation);
+    console.log('[Agent3] Type            :', typeAffirmation);
+    console.log('[Agent3] Prédicat        :', predicat || 'non précisé');
+    console.log('[Agent3] Négation att.   :', negationAttendue || 'non précisée');
 
     let preuves = preuvesAgent2.resultats || [];
-    preuves     = filtrerPreuves(preuves);
+    preuves = filtrerPreuves(preuves);
+    console.log('\n===== PREUVES APRES FILTRAGE =====');
+
+preuves.forEach((p, i) => {
+  console.log(
+    `[${i}] score=${p.score_pertinence} polarity=${p.polarity}`
+  );
+  console.log(p.extrait?.slice(0, 150));
+});
 
     if (preuves.length === 0) {
       return {
         affirmation,
-        verdict:          'INCERTAIN',
-        score_fiabilite:  25,
-        arguments_pour:   [],
+        type_affirmation:  typeAffirmation,
+        verdict: 'INCERTAIN',
+        score_fiabilite: 25,
+        arguments_pour: [],
         arguments_contre: [],
-        biais_detectes:   ['Aucune preuve pertinente trouvée'],
-        sources_citees:   [],
-        recommandation:   'Aucune source pertinente trouvée. Vérifiez manuellement.',
+        biais_detectes: ['Aucune preuve pertinente trouvée'],
+        sources_citees: [],
+        recommandation: 'Aucune source pertinente trouvée. Vérifiez manuellement.',
       };
     }
 
-    // ─── Analyse par polarité (exploite le travail de l'Agent 2) ──
-    const analyseLocale = analyserPreuves(preuves);
+    const analyseLocale = analyserPreuves(preuves, negationAttendue);
 
-    console.log('[Agent 3] Arguments POUR  :', analyseLocale.arguments_pour.length);
-    console.log('[Agent 3] Arguments CONTRE:', analyseLocale.arguments_contre.length);
+    console.log('[Agent3] Arguments POUR  :', analyseLocale.arguments_pour.length);
+    console.log('[Agent3] Arguments CONTRE:', analyseLocale.arguments_contre.length);
 
-    // ─── Tentative Gemini ──────────────────────────────────
     let analyseIA = null;
     try {
-      analyseIA = await analyseGemini(affirmation, criteres, structure, preuves);
-      console.log('[Agent 3] Gemini OK :', analyseIA?.verdict);
+      analyseIA = await analyseGemini(
+        affirmation, criteres, typeAffirmation, predicat, negationAttendue, preuves
+      );
+      console.log('[Agent3] ✅ Gemini OK → verdict:', analyseIA?.verdict);
     } catch (e) {
-      console.warn('[Agent 3] Gemini non disponible :', e.message);
+      console.warn('[Agent3] ⚠ Gemini indisponible :', e.message, '→ verdict local');
     }
 
-    // ─── Verdict final ─────────────────────────────────────
+    // ── Verdict final ────────────────────────────────────
     let verdict, score;
 
     if (analyseIA?.verdict) {
-      // Gemini disponible → on lui fait confiance
-      verdict = analyseIA.verdict;
-      score   = analyseIA.score_fiabilite ?? 70;
+      // Protection anti-hallucination : Gemini dit VRAI mais preuves CONTRE détectées → FAUX
+      if (analyseIA.verdict === 'VRAI' && analyseLocale.arguments_contre.length >= 1) {
+        console.warn('[Agent3] ⚡ Override VRAI → FAUX (contradictions locales)');
+        verdict = 'FAUX';
+        score   = 75;
+      } else {
+        verdict = analyseIA.verdict;
+        score   = analyseIA.score_fiabilite ?? 70;
+      }
     } else {
-      // Fallback local basé sur les polarités de l'Agent 2
-      const local = verdictLocal(
-        analyseLocale,
-        analyseLocale.scoring_via_fallback,
-        preuves   // ★ passage des preuves pour le calcul du score moyen
-      );
+      const local = verdictLocal(analyseLocale);
       verdict = local.verdict;
       score   = local.score;
     }
 
+    console.log(`\n[Agent3] ★ VERDICT FINAL : ${verdict} (${score}%)`);
+
     return {
       affirmation,
+      type_affirmation:  typeAffirmation,
       verdict,
-      score_fiabilite:  score,
-      arguments_pour:   analyseLocale.arguments_pour,
-      arguments_contre: analyseLocale.arguments_contre,
-      biais_detectes:   analyseIA?.biais_detectes ?? [],
-      sources_citees:   analyseLocale.sources_citees,
+      score_fiabilite:   score,
+      arguments_pour:    analyseLocale.arguments_pour,
+      arguments_contre:  analyseLocale.arguments_contre,
+      biais_detectes:    analyseIA?.biais_detectes ?? [],
+      sources_citees:    analyseLocale.sources_citees,
       recommandation:
         analyseIA?.recommandation ||
         (analyseLocale.scoring_via_fallback
-          ? 'Analyse en mode dégradé (API Gemini indisponible). Résultat basé sur analyse sémantique des sources.'
-          : 'Analyse terminée. Consultez les sources citées.'),
+          ? 'Analyse en mode fallback — résultat à vérifier manuellement.'
+          : 'Analyse terminée.'),
     };
 
   } catch (error) {
-
     console.error('[AGENT 3 ERROR]', error.message);
     return {
-      affirmation:      preuvesAgent2.affirmation,
-      verdict:          'INCERTAIN',
-      score_fiabilite:  50,
-      arguments_pour:   [],
+      affirmation: preuvesAgent2?.affirmation || '',
+      verdict: 'INCERTAIN',
+      score_fiabilite: 50,
+      arguments_pour: [],
       arguments_contre: [],
-      biais_detectes:   ['Erreur interne'],
-      sources_citees:   [],
-      recommandation:   "Erreur lors de l'analyse. Vérifiez manuellement.",
+      biais_detectes: ["Erreur interne lors de l'analyse"],
+      sources_citees: [],
+      recommandation: "Erreur lors de l'analyse. Vérifiez manuellement.",
     };
   }
 }

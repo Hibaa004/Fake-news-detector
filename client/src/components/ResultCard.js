@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 
 function VerdictBadge({ verdict }) {
+
   const config = {
+
     VRAI: {
       color: '#1E8449',
       bg: '#D5F5E3',
@@ -27,6 +29,7 @@ function VerdictBadge({ verdict }) {
   const c = config[verdict] || config.INCERTAIN;
 
   return (
+
     <div
       className="verdict-badge"
       style={{
@@ -35,6 +38,7 @@ function VerdictBadge({ verdict }) {
         borderColor: c.color,
       }}
     >
+
       <span className="verdict-icon">
         {c.icon}
       </span>
@@ -42,19 +46,19 @@ function VerdictBadge({ verdict }) {
       <span className="verdict-label">
         {c.label}
       </span>
+
     </div>
   );
 }
 
 function ScoreCircle({ score }) {
-  // Sécurisation du score
+
   let safeScore = Number(score);
 
   if (isNaN(safeScore)) {
     safeScore = 50;
   }
 
-  // Clamp entre 0 et 100
   safeScore = Math.max(
     0,
     Math.min(100, safeScore)
@@ -75,13 +79,15 @@ function ScoreCircle({ score }) {
     circ - (safeScore / 100) * circ;
 
   return (
+
     <div className="score-circle">
+
       <svg
         width="100"
         height="100"
         viewBox="0 0 100 100"
       >
-        {/* Cercle fond */}
+
         <circle
           cx="50"
           cy="50"
@@ -91,7 +97,6 @@ function ScoreCircle({ score }) {
           strokeWidth="10"
         />
 
-        {/* Cercle score */}
         <circle
           cx="50"
           cy="50"
@@ -109,7 +114,6 @@ function ScoreCircle({ score }) {
           }}
         />
 
-        {/* Texte score */}
         <text
           x="50"
           y="50"
@@ -123,11 +127,13 @@ function ScoreCircle({ score }) {
         >
           {safeScore}%
         </text>
+
       </svg>
 
       <p className="score-label">
-        Fiabilité
+        FIABILITÉ
       </p>
+
     </div>
   );
 }
@@ -137,6 +143,7 @@ export default function ResultCard({
   erreur,
   onReset,
 }) {
+
   const [tab, setTab] =
     useState('resume');
 
@@ -148,116 +155,68 @@ export default function ResultCard({
   );
 
   // =========================
-  // Gestion backend flexible
+  // DONNÉES PRINCIPALES
   // =========================
-
-  const firstResult =
-    resultat?.resultats?.[0] || {};
 
   const affirmation =
     resultat?.affirmation ||
-    firstResult?.affirmation ||
     'Affirmation inconnue';
 
   const verdict =
-    firstResult?.verdict ||
     resultat?.verdict ||
     'INCERTAIN';
 
   const score_fiabilite =
-    firstResult?.score_fiabilite ??
     resultat?.score_fiabilite ??
-    firstResult?.score ??
     50;
 
   // =========================
-  // Arguments
+  // ARGUMENTS
   // =========================
 
-  let arguments_pour =
-    firstResult?.arguments_pour ||
-    resultat?.arguments_pour ||
-    [];
+  const arguments_pour =
+    Array.isArray(resultat?.arguments_pour)
+      ? resultat.arguments_pour
+      : [];
 
-  let arguments_contre =
-    firstResult?.arguments_contre ||
-    resultat?.arguments_contre ||
-    [];
-
-  // Fallback Qdrant
-  if (
-    arguments_pour.length === 0 &&
-    resultat?.resultats?.length > 0
-  ) {
-    arguments_pour =
-      resultat.resultats.map((r) => {
-        if (typeof r === 'string') {
-          return r;
-        }
-
-        return (
-          r?.payload?.text ||
-          r?.payload?.content ||
-          r?.payload?.source ||
-          JSON.stringify(r)
-        );
-      });
-  }
+  const arguments_contre =
+    Array.isArray(resultat?.arguments_contre)
+      ? resultat.arguments_contre
+      : [];
 
   // =========================
-  // Sources
+  // SOURCES
   // =========================
 
-  let sources_citees =
-    firstResult?.sources_citees ||
-    resultat?.sources_citees ||
-    [];
-
-  // Fallback Qdrant
-  if (
-    sources_citees.length === 0 &&
-    resultat?.resultats?.length > 0
-  ) {
-    sources_citees =
-      resultat.resultats
-        .map((r) => {
-          if (typeof r === 'string') {
-            return null;
-          }
-
-          return (
-            r?.payload?.source ||
-            r?.payload?.url ||
-            r?.payload?.title ||
-            null
-          );
-        })
-        .filter(Boolean);
-  }
+  const sources_citees =
+    Array.isArray(resultat?.sources_citees)
+      ? resultat.sources_citees
+      : [];
 
   // =========================
-  // Biais
+  // BIAIS
   // =========================
 
   const biais_detectes =
-    firstResult?.biais_detectes ||
-    resultat?.biais_detectes ||
-    [];
+    Array.isArray(resultat?.biais_detectes)
+      ? resultat.biais_detectes
+      : [];
 
   // =========================
-  // Recommandation
+  // RECOMMANDATION
   // =========================
 
   const recommandation =
-    firstResult?.recommandation ||
     resultat?.recommandation ||
-    'Analyse terminée avec succès.';
+    'Analyse terminée.';
 
   return (
+
     <div className="result-container">
+
       <div className="result-card">
 
-        {/* ================= HEADER ================= */}
+        {/* HEADER */}
 
         <div className="result-header">
 
@@ -279,15 +238,17 @@ export default function ResultCard({
 
         </div>
 
-        {/* ================= ERREUR ================= */}
+        {/* ERREUR */}
 
         {erreur && (
+
           <div className="result-warning">
             ⚠️ {erreur}
           </div>
+
         )}
 
-        {/* ================= TABS ================= */}
+        {/* TABS */}
 
         <div className="tabs">
 
@@ -307,6 +268,7 @@ export default function ResultCard({
               label: '📚 Sources',
             },
           ].map((t) => (
+
             <button
               key={t.id}
               className={`tab-btn ${
@@ -320,13 +282,15 @@ export default function ResultCard({
             >
               {t.label}
             </button>
+
           ))}
 
         </div>
 
-        {/* ================= RESUME ================= */}
+        {/* RESUME */}
 
         {tab === 'resume' && (
+
           <div className="tab-content">
 
             <div className="recommandation">
@@ -341,8 +305,8 @@ export default function ResultCard({
 
             </div>
 
-            {biais_detectes.length >
-              0 && (
+            {biais_detectes.length > 0 && (
+
               <div className="biais">
 
                 <strong>
@@ -350,28 +314,35 @@ export default function ResultCard({
                 </strong>
 
                 <ul>
+
                   {biais_detectes.map(
                     (b, i) => (
+
                       <li key={i}>
                         {b}
                       </li>
+
                     )
                   )}
+
                 </ul>
 
               </div>
+
             )}
 
           </div>
+
         )}
 
-        {/* ================= PREUVES ================= */}
+        {/* PREUVES */}
 
         {tab === 'preuves' && (
+
           <div className="tab-content">
 
-            {arguments_pour.length >
-              0 && (
+            {arguments_pour.length > 0 && (
+
               <div className="arguments pour">
 
                 <h4>
@@ -379,20 +350,25 @@ export default function ResultCard({
                 </h4>
 
                 <ul>
+
                   {arguments_pour.map(
                     (a, i) => (
+
                       <li key={i}>
                         {String(a)}
                       </li>
+
                     )
                   )}
+
                 </ul>
 
               </div>
+
             )}
 
-            {arguments_contre.length >
-              0 && (
+            {arguments_contre.length > 0 && (
+
               <div className="arguments contre">
 
                 <h4>
@@ -400,55 +376,61 @@ export default function ResultCard({
                 </h4>
 
                 <ul>
+
                   {arguments_contre.map(
                     (a, i) => (
+
                       <li key={i}>
                         {String(a)}
                       </li>
+
                     )
                   )}
+
                 </ul>
 
               </div>
+
             )}
 
-            {arguments_pour.length ===
-              0 &&
-              arguments_contre.length ===
-                0 && (
-                <p className="empty-msg">
-                  Aucun argument disponible.
-                </p>
-              )}
+            {arguments_pour.length === 0 &&
+             arguments_contre.length === 0 && (
+
+              <p className="empty-msg">
+                Aucun argument disponible.
+              </p>
+
+            )}
 
           </div>
+
         )}
 
-        {/* ================= SOURCES ================= */}
+        {/* SOURCES */}
 
         {tab === 'sources' && (
+
           <div className="tab-content">
 
-            {sources_citees.length >
-            0 ? (
+            {sources_citees.length > 0 ? (
 
               <ul className="sources-list">
 
                 {sources_citees.map(
                   (s, i) => (
+
                     <li
                       key={i}
                       className="source-item"
                     >
+
                       <span className="source-icon">
                         📰
                       </span>
 
-                      {typeof s ===
-                        'string' &&
-                      s.startsWith(
-                        'http'
-                      ) ? (
+                      {typeof s === 'string' &&
+                       s.startsWith('http') ? (
+
                         <a
                           href={s}
                           target="_blank"
@@ -456,12 +438,17 @@ export default function ResultCard({
                         >
                           {s}
                         </a>
+
                       ) : (
+
                         <span>
                           {String(s)}
                         </span>
+
                       )}
+
                     </li>
+
                   )
                 )}
 
@@ -476,9 +463,10 @@ export default function ResultCard({
             )}
 
           </div>
+
         )}
 
-        {/* ================= ACTIONS ================= */}
+        {/* ACTIONS */}
 
         <div className="result-actions">
 
@@ -486,8 +474,7 @@ export default function ResultCard({
             className="btn-reset"
             onClick={onReset}
           >
-            🔄 Vérifier une autre
-            affirmation
+            🔄 Vérifier une autre affirmation
           </button>
 
           <button
@@ -529,6 +516,7 @@ ${sources_citees.join('\n')}
         </div>
 
       </div>
+
     </div>
   );
 }
