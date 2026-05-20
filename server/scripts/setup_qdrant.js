@@ -52,7 +52,7 @@ async function setup() {
       `${QDRANT_URL}/collections/${COLLECTION}`,
       {
         vectors: {
-          size: 3072,
+          size: 384,
           distance: "Cosine",
         },
       }

@@ -15,12 +15,31 @@ export default function App() {
 
   // ── Lancer la vérification ────────────────────────────
 async function handleVerify({ affirmation, email }) {
+
   setPhase('loading');
   setEtape('analyse');
   setResultat(null);
   setErreur('');
 
+  // Simulation progression agents
+  const timer1 = setTimeout(() => {
+    setEtape('recherche');
+  }, 3000);
+
+  const timer2 = setTimeout(() => {
+    setEtape('jugement');
+  }, 7000);
+
+  const timer3 = setTimeout(() => {
+    setEtape('logging');
+  }, 10000);
+
+  const timer4 = setTimeout(() => {
+    setEtape('termine');
+  }, 12000);
+
   try {
+
     const res = await fetch(`${API}/verify`, {
       method: 'POST',
       headers: {
@@ -36,10 +55,25 @@ async function handleVerify({ affirmation, email }) {
 
     console.log(data);
 
-    setResultat(data);
-    setPhase('done');
+    clearTimeout(timer1);
+    clearTimeout(timer2);
+    clearTimeout(timer3);
+    clearTimeout(timer4);
+
+    setEtape('termine');
+
+    setTimeout(() => {
+      setResultat(data);
+      setPhase('done');
+    }, 1000);
 
   } catch (err) {
+
+    clearTimeout(timer1);
+    clearTimeout(timer2);
+    clearTimeout(timer3);
+    clearTimeout(timer4);
+
     setPhase('error');
     setErreur(err.message || 'Erreur réseau');
   }

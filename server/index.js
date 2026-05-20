@@ -1,15 +1,17 @@
 import dotenv from "dotenv";
 dotenv.config();
-
+import groq from './groqClient.js';
 import express from "express";
 import cors from "cors";
 import axios from "axios";
-import { GoogleGenAI } from "@google/genai";
+
 
 import agentAnalyseur from "./agents/agent1_analyseur.js";
 import agentChercheur from "./agents/agent2_chercheur.js";
 import agentJuge from "./agents/agent3_juge.js";
 import mailer from "./services/mailer.js";
+
+console.log("GROQ =", process.env.GROQ_API_KEY);
 
 // ─────────────────────────────────────────────
 // DEBUG ENV
@@ -34,9 +36,6 @@ app.use(express.json());
 // Gemini
 // ─────────────────────────────────────────────
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
 
 // ─────────────────────────────────────────────
 // Qdrant
@@ -54,18 +53,7 @@ const COLLECTION =
 // Embedding
 // ─────────────────────────────────────────────
 
-async function embedTexte(text) {
 
-  const response =
-    await ai.models.embedContent({
-
-      model: "gemini-embedding-001",
-
-      contents: text,
-    });
-
-  return response.embeddings[0].values;
-}
 
 // ─────────────────────────────────────────────
 // ROUTE VERIFY

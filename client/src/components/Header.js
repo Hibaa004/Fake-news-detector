@@ -12,7 +12,7 @@ export default function Header() {
           </div>
         </div>
         <div className="header-badges">
-          <span className="badge badge-gemini">Gemini AI</span>
+          <span className="badge badge-gemini">Groq AI</span>
           <span className="badge badge-rag">RAG</span>
           <span className="badge badge-agents">3 Agents</span>
         </div>

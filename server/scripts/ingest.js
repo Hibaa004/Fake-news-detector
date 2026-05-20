@@ -1,6 +1,9 @@
 // ══════════════════════════════════════════════════════════
-// SETUP QDRANT + INGESTION
+// INGESTION QDRANT — VERSION FINALE
+// Compatible avec Agent2 (HF all-MiniLM-L6-v2)
+// Dimension = 384
 // ══════════════════════════════════════════════════════════
+
 import dotenv from "dotenv";
 
 dotenv.config({
@@ -9,36 +12,10 @@ dotenv.config({
 
 import axios from "axios";
 import { v4 as uuidv4 } from "uuid";
-import { GoogleGenAI } from "@google/genai";
+import { pipeline } from '@xenova/transformers';
 
 // ─────────────────────────────────────────────
-// DEBUG ENV
-// ─────────────────────────────────────────────
-
-
-
-console.log("===== ENV =====");
-
-console.log(
-  "GEMINI_API_KEY:",
-  !!process.env.GEMINI_API_KEY
-);
-
-console.log(
-  "QDRANT_URL:",
-  process.env.QDRANT_URL
-);
-
-// ─────────────────────────────────────────────
-// Gemini
-// ─────────────────────────────────────────────
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
-
-// ─────────────────────────────────────────────
-// Qdrant
+// CONFIG
 // ─────────────────────────────────────────────
 
 const QDRANT_URL =
@@ -50,10 +27,27 @@ const COLLECTION =
   "fake_news_detector";
 
 // ─────────────────────────────────────────────
-// Documents
+// DEBUG
+// ─────────────────────────────────────────────
+
+console.log("===== ENV =====");
+
+console.log(
+  "HF_TOKEN:",
+  !!process.env.HF_TOKEN
+);
+
+console.log(
+  "QDRANT_URL:",
+  QDRANT_URL
+);
+
+// ─────────────────────────────────────────────
+// DOCUMENTS
 // ─────────────────────────────────────────────
 
 const DOCUMENTS = [
+
   {
     texte:
       "Les vaccins ne causent pas l'autisme selon l'OMS.",
@@ -92,30 +86,64 @@ const DOCUMENTS = [
 
     date: "2025-01-01",
   },
+
 ];
 
 // ─────────────────────────────────────────────
-// Embedding
+// EMBEDDING HF
 // ─────────────────────────────────────────────
 
-async function embedTexte(text) {
+let extractor = null;
 
-  const response =
-    await ai.models.embedContent({
+async function getExtractor() {
 
-      model:
-        "gemini-embedding-001",
+  if (!extractor) {
 
-      contents: text,
-    });
+    console.log(
+      '📦 Chargement modèle HF local...'
+    );
 
-  return response
-    .embeddings[0]
-    .values;
+    extractor = await pipeline(
+      'feature-extraction',
+      'Xenova/all-MiniLM-L6-v2'
+    );
+
+    console.log(
+      '✅ Modèle chargé'
+    );
+  }
+
+  return extractor;
+}
+
+async function embedTexte(texte) {
+
+  try {
+
+    const model =
+      await getExtractor();
+
+    const output =
+      await model(texte, {
+        pooling: 'mean',
+        normalize: true,
+      });
+
+    return Array.from(output.data);
+
+  } catch (error) {
+
+    console.error(
+      '[LOCAL HF ERROR]',
+      error.message
+    );
+
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────
-// Création collection
+// CRÉATION COLLECTION
 // ─────────────────────────────────────────────
 
 async function creerCollection() {
@@ -133,10 +161,12 @@ async function creerCollection() {
   } catch {}
 
   await axios.put(
+
     `${QDRANT_URL}/collections/${COLLECTION}`,
+
     {
       vectors: {
-        size: 3072,
+        size: 384,
         distance: "Cosine",
       },
     }
@@ -148,7 +178,7 @@ async function creerCollection() {
 }
 
 // ─────────────────────────────────────────────
-// Ingestion
+// INGESTION
 // ─────────────────────────────────────────────
 
 async function ingerer() {
@@ -164,9 +194,16 @@ async function ingerer() {
     );
 
     const vecteur =
-      await embedTexte(
-        doc.texte
+      await embedTexte(doc.texte);
+
+    if (!vecteur) {
+
+      console.log(
+        "❌ Embedding impossible"
       );
+
+      continue;
+    }
 
     console.log(
       "📏 Dimension:",
@@ -199,13 +236,22 @@ async function ingerer() {
     });
   }
 
-  const response =
-    await axios.put(
-      `${QDRANT_URL}/collections/${COLLECTION}/points?wait=true`,
-      {
-        points,
-      }
+  // IMPORTANT
+  if (points.length === 0) {
+
+    throw new Error(
+      "Aucun embedding généré"
     );
+  }
+
+  const response = await axios.put(
+
+    `${QDRANT_URL}/collections/${COLLECTION}/points?wait=true`,
+
+    {
+      points,
+    }
+  );
 
   console.log(
     "✅ Insertion Qdrant OK"
@@ -215,10 +261,9 @@ async function ingerer() {
     response.data
   );
 
-  const info =
-    await axios.get(
-      `${QDRANT_URL}/collections/${COLLECTION}`
-    );
+  const info = await axios.get(
+    `${QDRANT_URL}/collections/${COLLECTION}`
+  );
 
   console.log(
     "📊 POINTS:",

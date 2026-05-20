@@ -144,8 +144,9 @@ export default function ResultCard({
   onReset,
 }) {
 
+  // ✅ résumé supprimé
   const [tab, setTab] =
-    useState('resume');
+    useState('preuves');
 
   if (!resultat) return null;
 
@@ -253,10 +254,6 @@ export default function ResultCard({
         <div className="tabs">
 
           {[
-            {
-              id: 'resume',
-              label: '📋 Résumé',
-            },
 
             {
               id: 'preuves',
@@ -267,6 +264,7 @@ export default function ResultCard({
               id: 'sources',
               label: '📚 Sources',
             },
+
           ].map((t) => (
 
             <button
@@ -286,54 +284,6 @@ export default function ResultCard({
           ))}
 
         </div>
-
-        {/* RESUME */}
-
-        {tab === 'resume' && (
-
-          <div className="tab-content">
-
-            <div className="recommandation">
-
-              <strong>
-                💡 Recommandation :
-              </strong>
-
-              <p>
-                {recommandation}
-              </p>
-
-            </div>
-
-            {biais_detectes.length > 0 && (
-
-              <div className="biais">
-
-                <strong>
-                  ⚠️ Biais détectés :
-                </strong>
-
-                <ul>
-
-                  {biais_detectes.map(
-                    (b, i) => (
-
-                      <li key={i}>
-                        {b}
-                      </li>
-
-                    )
-                  )}
-
-                </ul>
-
-              </div>
-
-            )}
-
-          </div>
-
-        )}
 
         {/* PREUVES */}
 

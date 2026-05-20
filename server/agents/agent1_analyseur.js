@@ -1,9 +1,7 @@
 
 
-import axios from 'axios';
 
-const GEMINI_URL =
-  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
+import groq from '../groqClient.js';
 
 // ─────────────────────────────────────────────────────────
 // Stop words français
@@ -156,16 +154,28 @@ async function analyser(affirmation, tentative = 1) {
   const MAX_TENTATIVES = 2;
 
   try {
-    const response = await axios.post(GEMINI_URL, {
-      contents: [{
-        parts: [{
-          text: `${SYSTEM_PROMPT}\n\nAffirmation : "${affirmation}"`
-        }]
-      }],
-      generationConfig: { temperature: 0.2, maxOutputTokens: 800 },
-    });
+   const completion =
+  await groq.chat.completions.create({
 
-    let texte = response.data.candidates[0].content.parts[0].text;
+    model: "llama-3.3-70b-versatile",
+
+    messages: [
+      {
+        role: "system",
+        content: SYSTEM_PROMPT
+      },
+      {
+        role: "user",
+        content: `Affirmation : "${affirmation}"`
+      }
+    ],
+
+    temperature: 0.2,
+    max_tokens: 800,
+  });
+
+let texte =
+  completion.choices[0].message.content;
     texte = texte.replace(/```json/g, '').replace(/```/g, '').trim();
 
     const resultat = JSON.parse(texte);

@@ -1,24 +1,5 @@
-// ══════════════════════════════════════════════════════════
-// AGENT 3 — JUGE  (FALLBACK ROBUSTE)
-//
-// PROBLÈME CORRIGÉ :
-// En mode fallback, le filtre SEUIL_PERTINENCE_JUGE=0.35
-// éliminait des preuves CONTRE valides scorées à 0.33,
-// laissant 0 arguments → INCERTAIN par défaut.
-//
-// CORRECTIFS :
-// ✅ Seuil adaptatif : si mode fallback, accepte dès 0.25
-// ✅ Fallback filet de sécurité : utilise negation_attendue
-//    directement sur les extraits avant de rendre INCERTAIN
-// ✅ Prompt Gemini enrichi par type d'affirmation
-// ✅ Protection anti-hallucination conservée
-// ══════════════════════════════════════════════════════════
 
-import axios from 'axios';
-
-const GEMINI_URL =
-  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
-
+import groq from '../groqClient.js';
 const SEUIL_PERTINENCE_NORMAL   = 0.20;
 const SEUIL_PERTINENCE_FALLBACK = 0.10;
 
@@ -136,77 +117,158 @@ function negationPresenteDansExtrait(negationAttendue, extrait) {
 // 4. Mots-clés lexicaux génériques      → POUR ou CONTRE
 // 5. Neutre                             → ignoré
 // ─────────────────────────────────────────────────────────
-function analyserPreuves(preuves, negationAttendue = '') {
+// ─────────────────────────────────────────────────────────
+// ★ Analyse locale ROBUSTE des preuves
+// ─────────────────────────────────────────────────────────
+function analyserPreuves(
+  preuves,
+  negationAttendue = '',
+  structure = {}
+) {
   const arguments_pour   = [];
   const arguments_contre = [];
   const sources_citees   = [];
+
   let nbFallback = 0;
 
+  const sujet = normaliserTexte(structure?.sujet || '');
+  const predicat = normaliserTexte(
+    structure?.predicat ||
+    structure?.role_revendique ||
+    ''
+  );
+
   for (const preuve of preuves) {
-    if (preuve.url) sources_citees.push(preuve.url);
+
+    if (preuve.url) {
+      sources_citees.push(preuve.url);
+    }
+
     if (!preuve.extrait) continue;
 
-    const texte = preuve.extrait.toLowerCase();
-    if (preuve.scoring_fallback) nbFallback++;
+    const texte = normaliserTexte(preuve.extrait);
 
-    // 1. Polarité Agent 2 explicite
+    if (preuve.scoring_fallback) {
+      nbFallback++;
+    }
+
+    // =====================================================
+    // 1. PRIORITÉ : polarity venant Agent2
+    // =====================================================
+
     if (preuve.polarity === 'contre') {
-      console.log(`[Agent3] → CONTRE (polarity Agent2) : ${preuve.source}`);
+
+      console.log(
+        `[Agent3] → CONTRE (polarity Agent2) : ${preuve.source}`
+      );
+
       arguments_contre.push(preuve.extrait);
       continue;
     }
+
     if (preuve.polarity === 'pour') {
-      console.log(`[Agent3] → POUR (polarity Agent2) : ${preuve.source}`);
+
+      console.log(
+        `[Agent3] → POUR (polarity Agent2) : ${preuve.source}`
+      );
+
       arguments_pour.push(preuve.extrait);
       continue;
     }
 
-    // 2. Négation attendue dans l'extrait
-    if (negationAttendue && negationPresenteDansExtrait(negationAttendue, preuve.extrait)) {
-      console.log(`[Agent3] → CONTRE (négation attendue) : ${preuve.source}`);
-      arguments_contre.push(preuve.extrait);
-      continue;
-    }
+    // =====================================================
+    // 2. Détection locale POUR
+    // =====================================================
 
-    // 3. Lexical
-    if (MOTS_CONTRE.some(m => texte.includes(m))) {
-      console.log(`[Agent3] → CONTRE (lexical) : ${preuve.source}`);
-      arguments_contre.push(preuve.extrait);
-      continue;
-    }
-    if (MOTS_POUR.some(m => texte.includes(m))) {
-      console.log(`[Agent3] → POUR (lexical) : ${preuve.source}`);
+    const sujetPresent =
+      sujet &&
+      texte.includes(sujet);
+
+    const predicatTokens =
+      tokeniserSignificatifs(predicat);
+
+    const predicatPresent =
+      predicatTokens.length > 0 &&
+      predicatTokens.some(t => texte.includes(t));
+
+    if (sujetPresent && predicatPresent) {
+
+      console.log(
+        `[Agent3] → POUR (détection locale) : ${preuve.source}`
+      );
+
       arguments_pour.push(preuve.extrait);
       continue;
     }
 
-    console.log(`[Agent3] → NEUTRE (ignoré) : ${preuve.source}`);
-  }
-  // FILET DE SECURITE
-if (
-  arguments_pour.length === 0 &&
-  arguments_contre.length === 0
-) {
-  for (const preuve of preuves) {
-
-    const txt = (preuve.extrait || '').toLowerCase();
+    // =====================================================
+    // 3. negation_attendue
+    // =====================================================
 
     if (
-      txt.includes('premier ministre') ||
-      txt.includes('chef du gouvernement')
+      negationAttendue &&
+      negationPresenteDansExtrait(
+        negationAttendue,
+        preuve.extrait
+      )
     ) {
+
+      console.log(
+        `[Agent3] → CONTRE (negation_attendue) : ${preuve.source}`
+      );
+
       arguments_contre.push(preuve.extrait);
+      continue;
     }
+
+    // =====================================================
+    // 4. Lexical CONTRE
+    // =====================================================
+
+    if (MOTS_CONTRE.some(m => texte.includes(m))) {
+
+      console.log(
+        `[Agent3] → CONTRE (lexical) : ${preuve.source}`
+      );
+
+      arguments_contre.push(preuve.extrait);
+      continue;
+    }
+
+    // =====================================================
+    // 5. Lexical POUR
+    // =====================================================
+
+    if (MOTS_POUR.some(m => texte.includes(m))) {
+
+      console.log(
+        `[Agent3] → POUR (lexical) : ${preuve.source}`
+      );
+
+      arguments_pour.push(preuve.extrait);
+      continue;
+    }
+
+    console.log(
+      `[Agent3] → NEUTRE : ${preuve.source}`
+    );
   }
-}
+
   return {
-    arguments_pour:       [...new Set(arguments_pour)].slice(0, 5),
-    arguments_contre:     [...new Set(arguments_contre)].slice(0, 5),
-    sources_citees:       [...new Set(sources_citees)].slice(0, 15),
-    scoring_via_fallback: nbFallback > 0 && nbFallback >= preuves.length / 2,
+    arguments_pour:
+      [...new Set(arguments_pour)].slice(0, 5),
+
+    arguments_contre:
+      [...new Set(arguments_contre)].slice(0, 5),
+
+    sources_citees:
+      [...new Set(sources_citees)].slice(0, 15),
+
+    scoring_via_fallback:
+      nbFallback > 0 &&
+      nbFallback >= preuves.length / 2,
   };
 }
-
 // ─────────────────────────────────────────────────────────
 // Analyse Gemini — prompt adapté au type d'affirmation
 // ─────────────────────────────────────────────────────────
@@ -255,12 +317,24 @@ Retourne UNIQUEMENT ce JSON :
 }
 `;
 
-  const response = await axios.post(GEMINI_URL, {
-    contents: [{ parts: [{ text: prompt }] }],
-    generationConfig: { temperature: 0.1, maxOutputTokens: 800 },
+ const completion =
+  await groq.chat.completions.create({
+
+    model: "llama-3.3-70b-versatile",
+
+    messages: [
+      {
+        role: "user",
+        content: prompt
+      }
+    ],
+
+    temperature: 0.1,
+    max_tokens: 800,
   });
 
-  let texte = response.data.candidates[0].content.parts[0].text;
+let texte =
+  completion.choices[0].message.content;
   texte = texte.replace(/```json/g, '').replace(/```/g, '').trim();
   return JSON.parse(texte);
 }
@@ -330,7 +404,11 @@ preuves.forEach((p, i) => {
       };
     }
 
-    const analyseLocale = analyserPreuves(preuves, negationAttendue);
+    const analyseLocale = analyserPreuves(
+  preuves,
+  negationAttendue,
+  structure
+);
 
     console.log('[Agent3] Arguments POUR  :', analyseLocale.arguments_pour.length);
     console.log('[Agent3] Arguments CONTRE:', analyseLocale.arguments_contre.length);
@@ -340,29 +418,70 @@ preuves.forEach((p, i) => {
       analyseIA = await analyseGemini(
         affirmation, criteres, typeAffirmation, predicat, negationAttendue, preuves
       );
-      console.log('[Agent3] ✅ Gemini OK → verdict:', analyseIA?.verdict);
+      console.log('[Agent3] ✅ Groq OK → verdict:', analyseIA?.verdict);
     } catch (e) {
-      console.warn('[Agent3] ⚠ Gemini indisponible :', e.message, '→ verdict local');
+      console.warn('[Agent3] ⚠ Groq indisponible :', e.message, '→ verdict local');
     }
 
     // ── Verdict final ────────────────────────────────────
     let verdict, score;
 
-    if (analyseIA?.verdict) {
-      // Protection anti-hallucination : Gemini dit VRAI mais preuves CONTRE détectées → FAUX
-      if (analyseIA.verdict === 'VRAI' && analyseLocale.arguments_contre.length >= 1) {
-        console.warn('[Agent3] ⚡ Override VRAI → FAUX (contradictions locales)');
-        verdict = 'FAUX';
-        score   = 75;
-      } else {
-        verdict = analyseIA.verdict;
-        score   = analyseIA.score_fiabilite ?? 70;
-      }
-    } else {
-      const local = verdictLocal(analyseLocale);
-      verdict = local.verdict;
-      score   = local.score;
-    }
+   if (analyseIA?.verdict) {
+
+  const nbPour =
+    analyseLocale.arguments_pour.length;
+
+  const nbContre =
+    analyseLocale.arguments_contre.length;
+
+  // =====================================================
+  // Protection anti inversion logique
+  // =====================================================
+
+  // Beaucoup de POUR et presque aucun CONTRE
+  // => impossible que ce soit FAUX
+
+  if (
+    analyseIA.verdict === 'FAUX' &&
+    nbPour >= 3 &&
+    nbContre === 0
+  ) {
+
+    console.warn(
+      '[Agent3] ⚡ Override FAUX → VRAI (preuves positives massives)'
+    );
+
+    verdict = 'VRAI';
+    score   = 90;
+  }
+
+  // Beaucoup de CONTRE et aucun POUR
+  // => impossible que ce soit VRAI
+
+  else if (
+    analyseIA.verdict === 'VRAI' &&
+    nbContre >= 3 &&
+    nbPour === 0
+  ) {
+
+    console.warn(
+      '[Agent3] ⚡ Override VRAI → FAUX (contradictions massives)'
+    );
+
+    verdict = 'FAUX';
+    score   = 85;
+  }
+
+  else {
+
+    verdict =
+      analyseIA.verdict;
+
+    score =
+      analyseIA.score_fiabilite ?? 70;
+  }
+
+}
 
     console.log(`\n[Agent3] ★ VERDICT FINAL : ${verdict} (${score}%)`);
 

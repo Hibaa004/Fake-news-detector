@@ -15,12 +15,10 @@
 // ══════════════════════════════════════════════════════════
 
 import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import { pipeline } from '@xenova/transformers';
 
-const GEMINI_EMBED_URL =
-  `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${process.env.GEMINI_API_KEY}`;
-
-const GEMINI_URL =
-  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
 const QDRANT_URL  = process.env.QDRANT_URL        || 'http://localhost:6333';
 const COLLECTION  = process.env.QDRANT_COLLECTION || 'fake_news_detector';
@@ -163,64 +161,230 @@ const termeClaim =
 // 3. Indicateurs génériques de polarité
 // 4. Score de chevauchement lexical pur
 // ─────────────────────────────────────────────────────────
-function scoreGeneriqueLocal(affirmation, extrait, negationAttendue, structure) {
+function scoreGeneriqueLocal(
+  affirmation,
+  extrait,
+  negationAttendue,
+  structure
+) {
+
   const motsAff     = tokeniserSignificatifs(affirmation);
   const motsExtrait = tokeniserSignificatifs(extrait);
+
   const extraitLow  = normaliserTexte(extrait);
 
-  // Score de couverture lexicale
+  // =====================================================
+  // SCORE LEXICAL
+  // =====================================================
+
   let matches = 0;
+
   for (const ma of motsAff) {
     for (const me of motsExtrait) {
-      if (motsMatchent(ma, me)) { matches++; break; }
+      if (motsMatchent(ma, me)) {
+        matches++;
+        break;
+      }
     }
   }
-  const score = motsAff.length > 0 ? Math.max(matches / motsAff.length, 0.25) : 0.25;
 
-  // ── Priorité 1 : negation_attendue → CONTRE ──────────
+  const score =
+    motsAff.length > 0
+      ? Math.max(matches / motsAff.length, 0.25)
+      : 0.25;
+
+  // =====================================================
+  // STRUCTURE CLAIM
+  // =====================================================
+
+  const sujet =
+    normaliserTexte(structure?.sujet || '');
+
+  const predicat =
+    normaliserTexte(
+      structure?.predicat ||
+      structure?.role_revendique ||
+      ''
+    );
+
+  const sujetPresent =
+    sujet &&
+    extraitLow.includes(sujet);
+
+  const predicatTokens =
+    tokeniserSignificatifs(predicat);
+
+  const predicatPresent =
+    predicatTokens.length > 0 &&
+    predicatTokens.some(t =>
+      extraitLow.includes(t)
+    );
+
+  // =====================================================
+  // CAS NORMAL :
+  // sujet + prédicat présents = POUR
+  // =====================================================
+
+  if (sujetPresent && predicatPresent) {
+
+    return {
+      score: Math.max(score, 0.85),
+      polarity: 'pour'
+    };
+  }
+
+  // =====================================================
+  // CONTRADICTION DYNAMIQUE
+  // =====================================================
+
+  if (
+    structure?.sujet &&
+    structure?.predicat &&
+    detecterContradictionDynamique(
+      structure.sujet,
+      structure.predicat,
+      extrait
+    )
+  ) {
+
+    return {
+      score: Math.max(score, 0.85),
+      polarity: 'contre'
+    };
+  }
+
+  // =====================================================
+  // NEGATION ATTENDUE
+  // IMPORTANT :
+  // seulement si expression forte de contradiction
+  // =====================================================
+
   if (negationAttendue) {
-    const negTokens   = tokeniserSignificatifs(negationAttendue);
-    const negMatches  = negTokens.filter(nt =>
-      motsExtrait.some(me => motsMatchent(nt, me))
+
+    const patternsContradiction = [
+      'n est pas',
+      'ne sont pas',
+      'contrairement',
+      'faux',
+      'incorrect',
+      'inexact',
+      'mais pas',
+      'et non',
+      'plutot que',
+      'au lieu de'
+    ];
+
+    const contradictionExplicite =
+      patternsContradiction.some(p =>
+        extraitLow.includes(p)
+      );
+
+    if (contradictionExplicite) {
+
+      return {
+        score: Math.max(score, 0.75),
+        polarity: 'contre'
+      };
+    }
+  }
+
+  // =====================================================
+  // INDICATEURS GENERIQUES
+  // =====================================================
+
+  const nbPour =
+    INDICATEURS_POUR.filter(c =>
+      extraitLow.includes(c)
     ).length;
-    const seuilNeg = Math.max(1, Math.floor(negTokens.length * 0.4));
-    if (negMatches >= seuilNeg) {
-      console.log(`[Agent2] → CONTRE via negation_attendue (${negMatches}/${negTokens.length} tokens matchés)`);
-      return { score, polarity: 'contre' };
-    }
+
+  const nbContre =
+    INDICATEURS_CONTRE.filter(c =>
+      extraitLow.includes(c)
+    ).length;
+
+  if (nbPour > nbContre && nbPour > 0) {
+
+    return {
+      score,
+      polarity: 'pour'
+    };
   }
 
-  // ── Priorité 2 : contradiction dynamique → CONTRE ────
-  if (structure?.sujet && structure?.predicat) {
-    if (detecterContradictionDynamique(structure.sujet, structure.predicat, extrait)) {
-      return { score, polarity: 'contre' };
-    }
+  if (nbContre > nbPour && nbContre > 0) {
+
+    return {
+      score,
+      polarity: 'contre'
+    };
   }
 
-  // ── Priorité 3 : indicateurs génériques ──────────────
-  const nbPour   = INDICATEURS_POUR.filter(c => extraitLow.includes(c)).length;
-  const nbContre = INDICATEURS_CONTRE.filter(c => extraitLow.includes(c)).length;
+  // =====================================================
+  // PAR DEFAUT :
+  // si sujet présent → plutôt POUR
+  // =====================================================
 
-  let polarity = 'neutre';
-  if (nbPour > 0 && nbPour >= nbContre)       polarity = 'pour';
-  else if (nbContre > 0 && nbContre > nbPour) polarity = 'contre';
+  if (sujetPresent) {
 
-  return { score, polarity };
+    return {
+      score,
+      polarity: 'pour'
+    };
+  }
+
+  return {
+    score,
+    polarity: 'neutre'
+  };
 }
 
 // ─────────────────────────────────────────────────────────
 // Embedding
 // ─────────────────────────────────────────────────────────
-async function embedTexte(texte, taskType = 'RETRIEVAL_QUERY') {
+let extractor = null;
+
+async function getExtractor() {
+
+  if (!extractor) {
+
+    console.log(
+      '📦 Chargement modèle HF local...'
+    );
+
+    extractor = await pipeline(
+      'feature-extraction',
+      'Xenova/all-MiniLM-L6-v2'
+    );
+
+    console.log(
+      '✅ Modèle chargé'
+    );
+  }
+
+  return extractor;
+}
+
+async function embedTexte(texte) {
+
   try {
-    const response = await axios.post(GEMINI_EMBED_URL, {
-      model: 'models/text-embedding-004',
-      content: { parts: [{ text: texte }] },
-      taskType,
-    });
-    return response.data.embedding.values;
+
+    const model =
+      await getExtractor();
+
+    const output =
+      await model(texte, {
+        pooling: 'mean',
+        normalize: true,
+      });
+
+    return Array.from(output.data);
+
   } catch (error) {
-    console.error('[EMBED ERROR]', error.response?.data?.error?.message || error.message);
+
+    console.error(
+      '[LOCAL HF ERROR]',
+      error.message
+    );
+
     return null;
   }
 }
@@ -290,7 +454,75 @@ async function rechercherSerpAPI(question) {
     return [];
   }
 }
+const RAG_DIR = path.join(process.cwd(), 'rag_documents');
 
+if (!fs.existsSync(RAG_DIR)) {
+  fs.mkdirSync(RAG_DIR, { recursive: true });
+}
+
+
+// ─────────────────────────────────────────────────────────
+// SAUVEGARDE URLS SOURCES
+// ─────────────────────────────────────────────────────────
+
+function sauvegarderSourcesDansRAG(affirmation, preuves) {
+
+  try {
+
+    // nom fichier propre
+    const nomFichier =
+      normaliserTexte(affirmation)
+        .replace(/\s+/g, '_')
+        .slice(0, 60);
+
+    const cheminFichier =
+      path.join(
+        RAG_DIR,
+        `${nomFichier}.txt`
+      );
+
+    // URLs uniques
+    const urls = [
+      ...new Set(
+        preuves
+          .map(p => p.url)
+          .filter(Boolean)
+      )
+    ];
+
+    // contenu
+    const contenu =
+`AFFIRMATION :
+${affirmation}
+
+DATE :
+${new Date().toLocaleString('fr-FR')}
+
+========================================
+SOURCES UTILISÉES
+========================================
+
+${urls.join('\n')}
+`;
+
+    fs.writeFileSync(
+      cheminFichier,
+      contenu,
+      'utf-8'
+    );
+
+    console.log(
+      `📁 Sources sauvegardées dans : ${cheminFichier}`
+    );
+
+  } catch (err) {
+
+    console.error(
+      '[RAG SAVE ERROR]',
+      err.message
+    );
+  }
+}
 // ─────────────────────────────────────────────────────────
 // Suppression doublons
 // ─────────────────────────────────────────────────────────
@@ -307,97 +539,54 @@ function supprimerDoublons(preuves) {
 // ─────────────────────────────────────────────────────────
 // Scoring principal — Gemini d'abord, fallback local ensuite
 // ─────────────────────────────────────────────────────────
-async function scorerPertinence(affirmation, criteres, preuves, analyseAgent1) {
+async function scorerPertinence(
+  affirmation,
+  criteres,
+  preuves,
+  analyseAgent1
+) {
+
   if (preuves.length === 0) return [];
 
-  const typeAffirmation  = analyseAgent1?.type_affirmation || 'autre';
-  const predicat         = analyseAgent1?.structure?.predicat || analyseAgent1?.structure?.role_revendique || '';
-  const negationAttendue = analyseAgent1?.negation_attendue || '';
-  const structure        = analyseAgent1?.structure || {};
+  const negationAttendue =
+    analyseAgent1?.negation_attendue || '';
 
-  const aScorer    = preuves.filter(p => p.type !== 'qdrant');
-  const dejaScores = preuves.filter(p => p.type === 'qdrant');
-  let resultatsScores = [...dejaScores];
+  const structure =
+    analyseAgent1?.structure || {};
 
-  if (aScorer.length > 0) {
-    try {
-      // ── Scoring Gemini ──────────────────────────────────
-      const prompt = `
-Tu es un expert en fact-checking.
+  const resultatsScores = [];
 
-Affirmation : "${affirmation}"
-Type d'affirmation : "${typeAffirmation}"
-Prédicat (ce qui est affirmé) : "${predicat}"
-Critères : "${criteres}"
-Ce qui contredirait l'affirmation : "${negationAttendue || 'à déterminer par analyse'}"
+  for (const preuve of preuves) {
 
-Pour chaque extrait, donne :
-- score (0.0 à 1.0) : pertinence pour vérifier l'affirmation
-- polarity : "pour" / "contre" / "neutre"
+    const { score, polarity } =
+      scoreGeneriqueLocal(
+        affirmation,
+        preuve.extrait,
+        negationAttendue,
+        structure
+      );
 
-RÈGLES :
-- Si l'extrait contredit le prédicat → "contre" (peu importe le type de claim)
-- Si l'extrait confirme le prédicat → "pour"
-- Un rôle différent, un chiffre différent, une date différente, une cause différente → "contre"
-
-Extraits :
-${aScorer.slice(0, 12).map((p, i) =>
-  `[${i}] Source: ${p.source}\n${p.extrait.slice(0, 300)}`
-).join('\n\n')}
-
-JSON uniquement :
-{ "resultats": [{"score": 0.8, "polarity": "contre"}, ...] }
-`;
-
-      const response = await axios.post(GEMINI_URL, {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.0, maxOutputTokens: 600 },
-      });
-
-      let texte = response.data.candidates[0].content.parts[0].text;
-      texte = texte.replace(/```json/g, '').replace(/```/g, '').trim();
-      const { resultats } = JSON.parse(texte);
-
-      aScorer.forEach((preuve, i) => {
-        const r = resultats[i] || {};
-        resultatsScores.push({
-          ...preuve,
-          score_pertinence: Number(r.score ?? 0.3),
-          polarity: r.polarity || 'neutre',
-        });
-      });
-
-      console.log('[Agent2] ✅ Scoring Gemini OK');
-
-    } catch (e) {
-      // ── Fallback scoring local robuste ───────────────────
-      console.warn('[Agent2] Scoring Gemini ÉCHEC :', e.message, '→ fallback local');
-
-      aScorer.forEach(preuve => {
-        const { score, polarity } = scoreGeneriqueLocal(
-          affirmation, preuve.extrait, negationAttendue, structure
-        );
-        resultatsScores.push({
-          ...preuve,
-          score_pertinence: score,
-          polarity,
-          scoring_fallback: true,
-        });
-      });
-    }
+    resultatsScores.push({
+      ...preuve,
+      score_pertinence: score,
+      polarity,
+      scoring_fallback: true,
+    });
   }
 
-  const filtres = resultatsScores.filter(p => p.score_pertinence >= SEUIL_PERTINENCE);
+  const filtres =
+    resultatsScores.filter(
+      p => p.score_pertinence >= SEUIL_PERTINENCE
+    );
 
-  console.log(`\n[Agent2] ${resultatsScores.length} preuves → ${filtres.length} retenues (seuil ${SEUIL_PERTINENCE})`);
-  filtres.forEach(p =>
-    console.log(
-      `  [${p.score_pertinence.toFixed(2)} | ${(p.polarity || '?').padEnd(7)}]`,
-      p.source.slice(0, 28).padEnd(28), '—', p.extrait.slice(0, 70) + '…'
-    )
+  console.log(
+    `\n[Agent2] ${resultatsScores.length} preuves → ${filtres.length} retenues`
   );
 
-  return filtres.sort((a, b) => b.score_pertinence - a.score_pertinence);
+  return filtres.sort(
+    (a, b) =>
+      b.score_pertinence - a.score_pertinence
+  );
 }
 
 // ─────────────────────────────────────────────────────────
@@ -456,6 +645,11 @@ async function chercher(analyseAgent1) {
   ]);
 
   toutesPreuves = await scorerPertinence(affirmation, criteres, toutesPreuves, analyseAgent1);
+
+sauvegarderSourcesDansRAG(
+  affirmation,
+  toutesPreuves
+);
 
   return {
     affirmation,
