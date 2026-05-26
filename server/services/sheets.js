@@ -4,15 +4,11 @@
 // ══════════════════════════════════════════════════════════
 const axios = require('axios');
 
-// Note : Pour Google Sheets en production, utiliser googleapis
-// Pour la version simple, on utilise une Google Apps Script Web App
-// Voir README pour la configuration
-
-const SHEETS_WEBHOOK = process.env.SHEETS_WEBHOOK_URL; // URL Apps Script
+const SHEETS_WEBHOOK = process.env.GOOGLE_SHEETS_ID; // URL Apps Script
 
 async function logToSheets(data) {
   if (!SHEETS_WEBHOOK) {
-    console.warn('[Sheets] SHEETS_WEBHOOK_URL non configuré — log ignoré');
+    console.warn('[Sheets] GOOGLE_SHEETS_ID non configuré — log ignoré');
     return;
   }
 

@@ -1,6 +1,3 @@
-
-
-
 import groq from '../groqClient.js';
 
 // ─────────────────────────────────────────────────────────
@@ -67,7 +64,7 @@ Règles IMPORTANTES :
 `;
 
 // ─────────────────────────────────────────────────────────
-// Extraction fallback basique (si Gemini échoue)
+// Extraction fallback basique 
 // ─────────────────────────────────────────────────────────
 function extraireStructureFallback(affirmation) {
   const texte = normaliserTexte(affirmation);

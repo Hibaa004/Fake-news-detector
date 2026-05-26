@@ -1,19 +1,3 @@
-// ══════════════════════════════════════════════════════════
-// AGENT 2 — CHERCHEUR  (FALLBACK ROBUSTE)
-//
-// PROBLÈME CORRIGÉ :
-// En mode fallback (Gemini KO), les snippets contenant
-// "premier ministre" face au claim "roi" étaient classés
-// NEUTRE car negation_attendue était vide.
-//
-// CORRECTIFS :
-// ✅ Utilise negation_attendue de l'Agent 1 (maintenant remplie)
-// ✅ Détection dynamique : si le sujet est présent dans l'extrait
-//    MAIS est associé à un AUTRE prédicat que celui revendiqué → CONTRE
-// ✅ Indicateurs génériques de contradiction conservés
-// ✅ Scoring Gemini inchangé (toujours prioritaire quand disponible)
-// ══════════════════════════════════════════════════════════
-
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
@@ -55,7 +39,7 @@ const INDICATEURS_CONTRE = [
 ];
 
 // ─────────────────────────────────────────────────────────
-// Normalisation
+// Normalisation:minuscules->enlèvent ponctuation+espaces superflus
 // ─────────────────────────────────────────────────────────
 function normaliserTexte(texte) {
   return texte
@@ -524,7 +508,7 @@ ${urls.join('\n')}
   }
 }
 // ─────────────────────────────────────────────────────────
-// Suppression doublons
+// Suppression doublons:Évite de scorer plusieurs fois le même extrait identique provenant de sources différentes
 // ─────────────────────────────────────────────────────────
 function supprimerDoublons(preuves) {
   const dejaVu = new Set();
@@ -537,7 +521,7 @@ function supprimerDoublons(preuves) {
 }
 
 // ─────────────────────────────────────────────────────────
-// Scoring principal — Gemini d'abord, fallback local ensuite
+// Scoring principal 
 // ─────────────────────────────────────────────────────────
 async function scorerPertinence(
   affirmation,

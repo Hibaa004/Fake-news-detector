@@ -70,7 +70,7 @@ function filtrerPreuves(preuves = []) {
     if (extrait.length < 30)                        return false;
     const score = Number(preuve.score_pertinence ?? 0);
 
-if (
+ if (
   score < seuil &&
   preuve.polarity !== 'contre'
 ) {
@@ -118,7 +118,7 @@ function negationPresenteDansExtrait(negationAttendue, extrait) {
 // 5. Neutre                             → ignoré
 // ─────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────
-// ★ Analyse locale ROBUSTE des preuves
+// ★ Analyse locale  des preuves
 // ─────────────────────────────────────────────────────────
 function analyserPreuves(
   preuves,
@@ -270,7 +270,7 @@ function analyserPreuves(
   };
 }
 // ─────────────────────────────────────────────────────────
-// Analyse Gemini — prompt adapté au type d'affirmation
+// Analyse  — prompt adapté au type d'affirmation
 // ─────────────────────────────────────────────────────────
 async function analyseGemini(affirmation, criteres, typeAffirmation, predicat, negationAttendue, preuves) {
   const instructionsParType = {
@@ -340,7 +340,7 @@ let texte =
 }
 
 // ─────────────────────────────────────────────────────────
-// Verdict local (fallback si Gemini indisponible)
+// Verdict local 
 // ─────────────────────────────────────────────────────────
 function verdictLocal(analyseLocale) {
   const nPour   = analyseLocale.arguments_pour.length;
@@ -383,7 +383,7 @@ async function juger(preuvesAgent2) {
     preuves = filtrerPreuves(preuves);
     console.log('\n===== PREUVES APRES FILTRAGE =====');
 
-preuves.forEach((p, i) => {
+ preuves.forEach((p, i) => {
   console.log(
     `[${i}] score=${p.score_pertinence} polarity=${p.polarity}`
   );
